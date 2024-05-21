@@ -62,6 +62,7 @@ oplus_chg_v2-y += hal/oplus_virtual_dpdm_switch.o
 oplus_chg_v2-y += hal/oplus_virtual_pps.o
 oplus_chg_v2-$(CONFIG_OPLUS_CHG_PARALLEL) += hal/oplus_virtual_switching.o
 oplus_chg_v2-y += hal/oplus_virtual_ufcs.o
+oplus_chg_v2-y += hal/oplus_virtual_platufcs.o
 
 oplus_chg_v2-y += mms/oplus_mms.o
 oplus_chg_v2-y += mms/oplus_mms_gauge.o

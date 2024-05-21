@@ -57,6 +57,7 @@
 
 #define SUBBOARD_TEMP_ABNORMAL_MAX_CURR		7300
 #define BTB_TEMP_OVER_MAX_INPUT_CUR		1000
+#define ADSP_CRASH_INPUT_CUR		2000
 #define OPLUS_VOOC_BCC_UPDATE_TIME		500
 #define OPLUS_VOOC_BCC_UPDATE_INTERVAL	\
 	round_jiffies_relative(msecs_to_jiffies(OPLUS_VOOC_BCC_UPDATE_TIME))
@@ -208,6 +209,7 @@ struct oplus_chg_vooc {
 	bool is_abnormal_adapter;
 	bool pre_is_abnormal_adapter;
 	bool support_abnormal_adapter;
+	bool adapter_model_factory;
 	bool mcu_vote_detach;
 	bool icon_debounce;
 	int abnormal_allowed_current_max;
@@ -1473,6 +1475,8 @@ static void oplus_vooc_switch_check_work(struct work_struct *work)
 	int chg_type;
 	bool present = false;
 	bool retry_flag = false;
+	static unsigned long fastchg_check_timeout;
+	unsigned long schedule_delay = 0;
 
 	chg_info("vooc switch check\n");
 
@@ -1566,8 +1570,8 @@ static void oplus_vooc_switch_check_work(struct work_struct *work)
 			return;
 	}
 
-	chg_info("switch_retry_count=%d, fast_chg_status=%d\n",
-		 chip->switch_retry_count, chip->fast_chg_status);
+	chg_info("switch_retry_count=%d, fast_chg_status=%d fastchg_check_timeout=%lu\n",
+		 chip->switch_retry_count, chip->fast_chg_status, fastchg_check_timeout);
 	if (chip->switch_retry_count == 0) {
 		if ((chip->fast_chg_status ==
 			     CHARGER_STATUS_SWITCH_TEMP_RANGE ||
@@ -1583,12 +1587,33 @@ static void oplus_vooc_switch_check_work(struct work_struct *work)
 			oplus_reset_adapter(chip);
 		}
 
+		fastchg_check_timeout = jiffies;
+		chg_err("switch to fastchg, jiffies=%lu\n", fastchg_check_timeout);
+
 		chip->switch_retry_count++;
 		oplus_vooc_switch_fast_chg(chip);
 		schedule_delayed_work(&chip->vooc_switch_check_work, msecs_to_jiffies(5000));
 		return;
 
 	} else if (chip->switch_retry_count <= RETRY_15S_COUNT) {
+		if ((chip->switch_retry_count == 1) &&
+		    time_is_after_jiffies(fastchg_check_timeout + (unsigned long)(5 * HZ))) {
+			schedule_delay = fastchg_check_timeout + (unsigned long)(5 * HZ) - jiffies;
+			schedule_delayed_work(&chip->vooc_switch_check_work, schedule_delay);
+			chg_err("Concurrent invalid calls lead to early triggering."
+				"The 5s interval has not expired, so continue to wait %lu jiffies\n",
+				schedule_delay);
+			return;
+		} else if ((chip->switch_retry_count == RETRY_15S_COUNT) &&
+			    time_is_after_jiffies(fastchg_check_timeout + (unsigned long)(15 * HZ))) {
+			schedule_delay = fastchg_check_timeout + (unsigned long)(15 * HZ) - jiffies;
+			schedule_delayed_work(&chip->vooc_switch_check_work, schedule_delay);
+			chg_err("Concurrent invalid calls lead to early triggering."
+				"The 15s interval has not expired, so continue to wait %lu jiffies\n",
+				schedule_delay);
+			return;
+		}
+
 		oplus_vooc_get_retry_flag(chip->vooc_ic, &retry_flag);
 		if (chip->switch_retry_count == 1 && !retry_flag) {
 			chip->switch_retry_count++;
@@ -1615,6 +1640,16 @@ static void oplus_vooc_switch_check_work(struct work_struct *work)
 		chip->switch_retry_count++;
 		return;
 	} else {
+		if ((chip->switch_retry_count == 3) &&
+		    time_is_after_jiffies(fastchg_check_timeout + (unsigned long)(30 * HZ))) {
+			schedule_delay = fastchg_check_timeout + (unsigned long)(30 * HZ) - jiffies;
+			schedule_delayed_work(&chip->vooc_switch_check_work, schedule_delay);
+			chg_err("Concurrent invalid calls lead to early triggering."
+				"The 30s interval has not expired, so continue to wait %lu jiffies\n",
+				schedule_delay);
+			return;
+		}
+
 		chip->switch_retry_count = 0;
 		switch_normal_chg(chip->vooc_ic);
 		oplus_vooc_set_reset_sleep(chip->vooc_ic);
@@ -2537,6 +2572,27 @@ static void oplus_vooc_adsp_recover_work(struct work_struct *work)
 		container_of(dwork, struct oplus_chg_vooc, adsp_recover_work);
 	chg_err("adsp_recover\n");
 	vote(chip->vooc_disable_votable, ADSP_CRASH_VOTER, false, 0, false);
+	msleep(6000);
+	if (chip->wired_icl_votable)
+		vote(chip->wired_icl_votable, ADSP_CRASH_VOTER, false, 0, false);
+}
+
+static void oplus_vooc_adapter_data (struct oplus_chg_vooc *chip, int vooc_adapter_data)
+{
+	struct oplus_vooc_config *config = &chip->config;
+
+	if (config == NULL ) {
+		chg_err("config is NULL\n");
+		return;
+	}
+
+	chip->adapter_model_factory = false;
+	chip->adapter_id = vooc_adapter_data;
+	oplus_vooc_set_sid(chip, oplus_get_adapter_sid(chip, vooc_adapter_data));
+	oplus_vooc_chg_bynormal_path(chip);
+	if (is_client_vote_enabled(chip->vooc_disable_votable, FASTCHG_DUMMY_VOTER) &&
+	    config->vooc_version >= VOOC_VERSION_5_0)
+		oplus_vooc_switch_normal_chg(chip);
 }
 
 static void oplus_vooc_fastchg_work(struct work_struct *work)
@@ -2549,7 +2605,6 @@ static void oplus_vooc_fastchg_work(struct work_struct *work)
 	union mms_msg_data topic_data = { 0 };
 	static bool fw_ver_info = false;
 	static bool adapter_fw_ver_info = false;
-	static bool adapter_model_factory = false;
 	bool ignore_device_type = false;
 	bool charger_delay_check = false;
 	int charger_delay_check_time = 0;
@@ -2567,7 +2622,7 @@ static void oplus_vooc_fastchg_work(struct work_struct *work)
 	data = oplus_vooc_read_ap_data(chip->vooc_ic);
 
 	if (((data & 0xf0) != 0x50) && ((data & 0xf0) != 0x70) && (!fw_ver_info) &&
-	    (!adapter_fw_ver_info) && (!adapter_model_factory) &&
+	    (!adapter_fw_ver_info) && (!chip->adapter_model_factory) &&
 	    data != VOOC_NOTIFY_ABNORMAL_ADAPTER &&
 	    ((is_support_parallel_battery(chip->gauge_topic) &&
 	      data != VOOC_NOTIFY_CURR_LIMIT_SMALL) ||
@@ -2588,7 +2643,7 @@ static void oplus_vooc_fastchg_work(struct work_struct *work)
 	switch (data) {
 	case VOOC_NOTIFY_FAST_PRESENT:
 		oplus_vooc_set_awake(chip, true);
-		adapter_model_factory = false;
+		chip->adapter_model_factory = false;
 		oplus_vooc_set_online(chip, true);
 		oplus_vooc_set_online_keep(chip, true);
 		chip->temp_over_count = 0;
@@ -2600,6 +2655,8 @@ static void oplus_vooc_fastchg_work(struct work_struct *work)
 			oplus_vooc_set_vooc_started(chip, true);
 			vote(chip->vooc_disable_votable, FASTCHG_DUMMY_VOTER,
 			     false, 0, false);
+			if (chip->wired_icl_votable)
+				vote(chip->wired_icl_votable, ADSP_CRASH_VOTER, false, 0, false);
 			oplus_vooc_set_vooc_charging(chip, false);
 			if (chip->general_strategy != NULL)
 				oplus_chg_strategy_init(chip->general_strategy);
@@ -2619,14 +2676,14 @@ static void oplus_vooc_fastchg_work(struct work_struct *work)
 		 */
 		chip->switch_retry_count = 0;
 		if (config->vooc_version >= VOOC_VERSION_5_0)
-			adapter_model_factory = true;
+			chip->adapter_model_factory = true;
 		oplus_vooc_setup_watchdog_timer(chip, 25000);
 		oplus_select_abnormal_max_cur(chip);
 		chip->vooc_strategy_change_count = 0;
 		ret_info = VOOC_DEF_REPLY_DATA;
 		break;
 	case VOOC_NOTIFY_FAST_ABSENT:
-		adapter_model_factory = false;
+		chip->adapter_model_factory = false;
 		chip->mcu_vote_detach = true;
 		oplus_vooc_push_break_code(chip, TRACK_MCU_VOOCPHY_FAST_ABSENT);
 		if (!is_client_vote_enabled(chip->vooc_disable_votable,
@@ -2776,12 +2833,16 @@ static void oplus_vooc_fastchg_work(struct work_struct *work)
 		ret_info = VOOC_DEF_REPLY_DATA;
 		break;
 	case VOOC_NOTIFY_CURR_LIMIT_SMALL:
-		charger_delay_check = true;
-		chip->check_curr_delay = true;
-		oplus_set_fast_status(chip, CHARGER_STATUS_CURR_LIMIT);
-		vote(chip->vooc_disable_votable, CURR_LIMIT_VOTER, true,
-		     1, false);
-		oplus_vooc_fastchg_exit(chip, true);
+		if (!chip->adapter_model_factory) {
+			charger_delay_check = true;
+			chip->check_curr_delay = true;
+			oplus_set_fast_status(chip, CHARGER_STATUS_CURR_LIMIT);
+			vote(chip->vooc_disable_votable, CURR_LIMIT_VOTER, true,
+			     1, false);
+			oplus_vooc_fastchg_exit(chip, true);
+		} else {
+			oplus_vooc_adapter_data(chip, data);
+		}
 		ret_info = VOOC_DEF_REPLY_DATA;
 		break;
 
@@ -2812,32 +2873,26 @@ static void oplus_vooc_fastchg_work(struct work_struct *work)
 		ret_info = VOOC_DEF_REPLY_DATA;
 		break;
 	case VOOC_NOTIFY_ADAPTER_MODEL_FACTORY:
-		adapter_model_factory = true;
+		chip->adapter_model_factory = true;
 		ret_info = VOOC_DEF_REPLY_DATA;
 		break;
 	case VOOC_NOTIFY_ABNORMAL_ADAPTER:
-		oplus_vooc_del_watchdog_timer(chip);
-		if (chip->fastchg_started) {
-			charger_delay_check = true;
-			oplus_set_fast_status(chip, CHARGER_STATUS_FAST_DUMMY);
-			vote(chip->vooc_disable_votable, SWITCH_RANGE_VOTER, true, 1, false);
-			oplus_vooc_fastchg_exit(chip, true);
+		if (!chip->adapter_model_factory) {
+			oplus_vooc_del_watchdog_timer(chip);
+			if (chip->fastchg_started) {
+				charger_delay_check = true;
+				oplus_set_fast_status(chip, CHARGER_STATUS_FAST_DUMMY);
+				vote(chip->vooc_disable_votable, SWITCH_RANGE_VOTER, true, 1, false);
+				oplus_vooc_fastchg_exit(chip, true);
+			}
+		} else {
+			oplus_vooc_adapter_data(chip, data);
 		}
 		ret_info = VOOC_DEF_REPLY_DATA;
 		break;
 	default:
-		if (adapter_model_factory) {
-			adapter_model_factory = false;
-			chip->adapter_id = data;
-			/* TODO: error type check */
-			oplus_vooc_set_sid(chip,
-					   oplus_get_adapter_sid(chip, data));
-			oplus_vooc_chg_bynormal_path(chip);
-			if (is_client_vote_enabled(chip->vooc_disable_votable,
-						   FASTCHG_DUMMY_VOTER) &&
-			    config->vooc_version >= VOOC_VERSION_5_0)
-				oplus_vooc_switch_normal_chg(chip);
-
+		if (chip->adapter_model_factory) {
+			oplus_vooc_adapter_data(chip, data);
 			ret_info = VOOC_DEF_REPLY_DATA;
 			break;
 		}
@@ -2848,10 +2903,13 @@ static void oplus_vooc_fastchg_work(struct work_struct *work)
 			oplus_set_fast_status(chip, CHARGER_STATUS_FAST_DUMMY);
 			if (chip->fastchg_started) {
 				if (data == 0x74 && config->voocphy_support == ADSP_VOOCPHY) {
-					chg_info("receive 0x74 adsp crash\n");
-					charger_delay_check_time = 4500;
+					chg_info("receive 0x74 adsp crash,set icl to 2A\n");
+					charger_delay_check_time = 6500;
 					schedule_delayed_work(&chip->adsp_recover_work, msecs_to_jiffies(4000));
 					vote(chip->vooc_disable_votable, ADSP_CRASH_VOTER, true, 1, false);
+					if (chip->wired_icl_votable)
+						vote(chip->wired_icl_votable, ADSP_CRASH_VOTER, true,
+								ADSP_CRASH_INPUT_CUR, true);
 				} else
 					vote(chip->vooc_disable_votable, SWITCH_RANGE_VOTER, true, 1, false);
 			}
@@ -3425,9 +3483,15 @@ static void oplus_vooc_gauge_subs_callback(struct mms_subscribe *subs,
 				chg_err("can't get GAUGE_ITEM_SUBBOARD_TEMP_ERR data, rc=%d\n",
 					rc);
 			} else {
-				chg_info("subboard temp err, max curr set %d\n", chip->subboard_ntc_abnormal_current);
-				vote(chip->vooc_curr_votable, BAD_SUBBOARD_VOTER, true,
-				     chip->subboard_ntc_abnormal_current, false);
+				if (!!data.intval) {
+					chg_info("subboard temp err, max curr set %d\n", chip->subboard_ntc_abnormal_current);
+					vote(chip->vooc_curr_votable, BAD_SUBBOARD_VOTER, true,
+				     	chip->subboard_ntc_abnormal_current, false);
+				} else {
+					chg_info("subboard temp ok, need cancel set curr\n");
+					vote(chip->vooc_curr_votable, BAD_SUBBOARD_VOTER, false,
+					     0, false);
+				}
 			}
 			break;
 		default:
@@ -5388,6 +5452,28 @@ static int oplus_vooc_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void oplus_vooc_shutdown(struct platform_device *pdev)
+{
+	int rc = 0;
+	struct oplus_chg_vooc *chip = platform_get_drvdata(pdev);
+
+	if (chip == NULL || chip->vooc_ic == NULL) {
+		chg_err("chip or vooc is NULL\n");
+		return;
+	}
+
+	if (is_wired_charge_suspend_votable_available(chip) &&
+	    chip->config.voocphy_support != ADSP_VOOCPHY &&
+	    chip->wired_online) {
+		oplus_vooc_set_shutdown_mode(chip->vooc_ic);
+		vote(chip->wired_charge_suspend_votable, SHUTDOWN_VOTER, true, 1, false);
+		rc = set_chg_auto_mode(chip->vooc_ic, false);
+		chg_err("%s to quit auto mode rc= %d\n", rc == 0 ? "success" :"fail", rc);
+		msleep(1000);
+		vote(chip->wired_charge_suspend_votable, SHUTDOWN_VOTER, false, 0, false);
+	}
+}
+
 static const struct of_device_id oplus_vooc_match[] = {
 	{ .compatible = "oplus,vooc" },
 	{},
@@ -5401,6 +5487,7 @@ static struct platform_driver oplus_vooc_driver = {
 	},
 	.probe		= oplus_vooc_probe,
 	.remove		= oplus_vooc_remove,
+	.shutdown	= oplus_vooc_shutdown,
 };
 
 static __init int oplus_vooc_init(void)
@@ -6236,7 +6323,6 @@ static bool oplus_check_afi_update_condition(struct oplus_chg_vooc *chip)
 				}
 				return false;
 			} else {
-				chg_err(" true 3: normal charger or others unkown\n");
 				return true;
 			}
 		}

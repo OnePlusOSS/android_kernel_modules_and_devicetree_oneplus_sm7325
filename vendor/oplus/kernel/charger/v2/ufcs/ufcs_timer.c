@@ -22,7 +22,7 @@ static enum hrtimer_restart ack_receive_timeout(struct hrtimer *timer)
 
 	ufcs_err("ack receive timeout\n");
 	class->sender.status = MSG_ACK_TIMEOUT;
-	queue_work(class->wq, &class->msg_send_work);
+	kthread_queue_work(class->worker, &class->msg_send_work);
 
 	return HRTIMER_NORESTART;
 }
@@ -172,7 +172,7 @@ static enum hrtimer_restart msg_trans_delay_timeout(struct hrtimer *timer)
 	} else {
 		class->sender.status = MSG_SEND_START;
 		if (class->sender.msg)
-			queue_work(class->wq, &class->msg_send_work);
+			kthread_queue_work(class->worker, &class->msg_send_work);
 	}
 	return HRTIMER_NORESTART;
 }

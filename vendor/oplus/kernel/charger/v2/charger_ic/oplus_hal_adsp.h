@@ -33,8 +33,14 @@
 #define OEM_OPCODE_READ_BUFFER    0x10000
 #define BCC_OPCODE_READ_BUFFER    0x10003
 #define PPS_OPCODE_READ_BUFFER    0x10004
+#define AP_OPCODE_UFCS_BUFFER     0x10005
+#define AP_OPCODE_READ_BUFFER  0x10006
 #define OEM_READ_WAIT_TIME_MS    500
 #define MAX_OEM_PROPERTY_DATA_SIZE 128
+#define AP_READ_WAIT_TIME_MS      500
+#define MAX_AP_PROPERTY_DATA_SIZE 512
+#define AP_UFCS_WAIT_TIME_MS      500
+#define MAX_UFCS_CAPS_ITEM        16
 #endif
 
 #define MSG_OWNER_BC			32778
@@ -80,6 +86,13 @@
 #define BC_ADSP_NOTIFY_AP_CP_MOS_DISABLE	0x0064
 #define BC_PPS_OPLUS				0x65
 #define BC_ADSP_NOTIFY_TRACK			0x66
+#define BC_UFCS_TEST_MODE_TRUE		0X68
+#define BC_UFCS_TEST_MODE_FALSE		0X69
+#define BC_UFCS_POWER_READY		0X70
+#define BC_UFCS_HANDSHAKE_OK		0X71
+#define BC_VOOC_GAN_MOS_ERROR	   0X72
+#define BC_UFCS_DISABLE_MOS		0X73
+#define BC_UFCS_PDO_READY		0X74
 #endif
 
 #ifdef OPLUS_FEATURE_CHG_BASIC
@@ -104,6 +117,36 @@ struct oem_read_buffer_resp_msg {
 	struct pmic_glink_hdr hdr;
 	u32 data_buffer[MAX_OEM_PROPERTY_DATA_SIZE];
 	u32 data_size;
+};
+
+struct oplus_ap_read_ufcs_req_msg {
+	struct pmic_glink_hdr hdr;
+	u32 data_size;
+};
+
+struct oplus_ap_read_ufcs_resp_msg {
+	struct pmic_glink_hdr hdr;
+	u64 data_buffer[MAX_UFCS_CAPS_ITEM];
+	u32 data_size;
+};
+
+struct oplus_ap_read_req_msg {
+	struct pmic_glink_hdr hdr;
+	u32 message_id;
+};
+
+struct oplus_ap_read_buffer_resp_msg {
+	struct pmic_glink_hdr hdr;
+	u32 message_id;
+	u8 data_buffer[MAX_AP_PROPERTY_DATA_SIZE];
+	u32 data_size;
+};
+
+enum oplus_ap_message_id {
+	AP_MESSAGE_ACK,
+	AP_MESSAGE_GET_GAUGE_REG_INFO,
+	AP_MESSAGE_GET_GAUGE_CALIB_TIME,
+	AP_MESSAGE_MAX_SIZE = 32,
 };
 #endif
 
@@ -187,6 +230,7 @@ enum battery_property_id {
 	BATT_AFI_UPDATE_DONE,
 	BATT_UI_SOC,
 	BATT_AP_FASTCHG_ALLOW,
+	BATT_SET_VOOC_CURVE_NUM,
 #endif
 	BATT_PROP_MAX,
 };
@@ -247,6 +291,20 @@ enum usb_property_id {
 	USB_GET_BATT_CURR,
 	USB_PPS_FORCE_SVOOC,
 	USB_SET_OVP_CFG,
+	USB_SET_UFCS_START,
+	USB_SET_UFCS_VOLT,
+	USB_SET_UFCS_CURRENT,
+	USB_GET_UFCS_STATUS,
+	USB_GET_DEV_INFO_L,
+	USB_GET_DEV_INFO_H,
+	USB_SET_WD_TIME,
+	USB_GET_PDO_INFO_CURR,
+	USB_GET_PDO_INFO_VOLT,
+	USB_GET_PDO_INFO_STEP,
+	USB_SET_EXIT,
+	USB_GET_SRC_INFO_L,
+	USB_GET_SRC_INFO_H,
+	USB_SET_GET_SRC,
 #endif /*OPLUS_FEATURE_CHG_BASIC*/
 	USB_PROP_MAX,
 };
@@ -439,6 +497,8 @@ struct oplus_chg_iio {
 	struct iio_channel	*usbtemp_v_chan;
 	struct iio_channel	*usbtemp_sup_v_chan;
 	struct iio_channel	*subboard_temp_chan;
+	struct iio_channel	*batt_con_btb_chan;
+	struct iio_channel	*usb_con_btb_chan;
 };
 #endif
 
@@ -451,7 +511,10 @@ struct battery_chg_dev {
 	struct oplus_chg_ic_dev		*misc_ic;
 	struct oplus_chg_ic_dev		*pps_ic;
 	struct oplus_mms		*vooc_topic;
+	struct oplus_chg_ic_dev		*ufcs_ic;
+	struct oplus_impedance_node	*input_imp_node;
 	struct oplus_mms		*common_topic;
+	struct oplus_mms		*pps_topic;
 	struct votable			*chg_disable_votable;
 	struct mutex			chg_en_lock;
 	bool 				    chg_en;
@@ -469,7 +532,11 @@ struct battery_chg_dev {
 	int				curr_thermal_level;
 	int				num_thermal_levels;
 	int				charger_type;
+	int				last_charger_type;
+	int				adsp_crash;
 	atomic_t			state;
+	int				g_icl_ma;
+	int				rerun_max;
 	struct work_struct		subsys_up_work;
 	struct work_struct		usb_type_work;
 #ifdef OPLUS_FEATURE_CHG_BASIC
@@ -503,6 +570,11 @@ struct battery_chg_dev {
 	unsigned long long 	hvdcp_detach_time;
 	bool 				hvdcp_detect_ok;
 	bool					hvdcp_disable;
+	bool				bc12_completed;
+	bool				ufcs_test_mode;
+	bool				ufcs_power_ready;
+	bool				ufcs_handshake_ok;
+	bool				ufcs_pdo_ready;
 	struct delayed_work 	hvdcp_disable_work;
 	struct delayed_work 	pd_only_check_work;
 	bool					voocphy_err_check;
@@ -510,6 +582,7 @@ struct battery_chg_dev {
 #ifdef OPLUS_FEATURE_CHG_BASIC
 	int vchg_trig_irq;
 	struct delayed_work vchg_trig_work;
+	struct delayed_work vbus_collapse_rerun_icl_work;
 	struct delayed_work wait_wired_charge_on;
 	struct delayed_work wait_wired_charge_off;
 	bool wls_fw_update;
@@ -545,6 +618,12 @@ struct battery_chg_dev {
 	struct oem_read_buffer_resp_msg  pps_read_buffer_dump;
 	struct mutex	pps_read_buffer_lock;
 	struct completion	 pps_read_ack;
+	struct oplus_ap_read_buffer_resp_msg	*ap_read_buffer_dump;
+	struct mutex				ap_read_buffer_lock;
+	struct completion			ap_read_ack[AP_MESSAGE_MAX_SIZE];
+	struct oplus_ap_read_ufcs_resp_msg  ufcs_read_buffer_dump;
+	struct mutex	ufcs_read_buffer_lock;
+	struct completion	 ufcs_read_ack;
 	int cp_work_mode;
 	bool gauge_data_initialized;
 	int otg_scheme;
@@ -599,5 +678,6 @@ int oplus_adsp_voocphy_set_cool_down(int cool_down);
 int oplus_adsp_voocphy_get_bcc_max_current(void);
 int oplus_adsp_voocphy_get_bcc_min_current(void);
 int oplus_adsp_voocphy_get_atl_last_geat_current(void);
+int oplus_adsp_voocphy_set_curve_num(int number);
 #endif
 #endif /*__SM8350_CHARGER_H*/

@@ -67,6 +67,7 @@ struct mms_item {
 	struct mms_item_desc desc;
 	bool updated;
 	rwlock_t lock;
+	struct mutex update_lock;
 	union mms_msg_data data;
 	union mms_msg_data pre_data;
 };

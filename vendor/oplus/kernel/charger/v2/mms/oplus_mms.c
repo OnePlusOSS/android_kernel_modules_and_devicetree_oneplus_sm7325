@@ -30,6 +30,7 @@ static struct device_type oplus_mms_dev_type;
 static struct workqueue_struct	*mms_wq;
 static DEFINE_MUTEX(wait_list_lock);
 static LIST_HEAD(oplus_mms_wait_list);
+static void oplus_mms_call(struct oplus_mms *topic);
 static struct mms_item *oplus_mms_get_item(struct oplus_mms *mms, u32 id)
 {
 	struct mms_item *item_table = mms->desc->item_table;
@@ -97,6 +98,7 @@ bool oplus_mms_item_update(struct oplus_mms *mms, u32 item_id, bool check_update
 {
 	struct mms_item *item;
 	union mms_msg_data data = { 0 };
+	bool update;
 
 	if (mms == NULL || mms->desc == NULL ||
 	    !mms->desc->item_table) {
@@ -112,8 +114,9 @@ bool oplus_mms_item_update(struct oplus_mms *mms, u32 item_id, bool check_update
 	if (item->desc.update == NULL) {
 		return false;
 	}
-
+	mutex_lock(&item->update_lock);
 	item->desc.update(mms, &data);
+	mutex_unlock(&item->update_lock);
 	write_lock(&item->lock);
 	memcpy(&item->data, &data, sizeof(union mms_msg_data));
 	if (!check_update) {
@@ -164,8 +167,10 @@ bool oplus_mms_item_update(struct oplus_mms *mms, u32 item_id, bool check_update
 	}
 
 out:
+	update = item->updated;
 	write_unlock(&item->lock);
-	return item->updated;
+
+	return update;
 }
 
 static int oplus_mms_item_update_by_msg(struct oplus_mms *mms, u32 item_id,
@@ -567,6 +572,18 @@ int oplus_mms_wait_topic(const char *name, mms_callback_t call, void *data)
 	mutex_lock(&wait_list_lock);
 	list_add(&head->list, &oplus_mms_wait_list);
 	mutex_unlock(&wait_list_lock);
+
+	/*
+	 * The topic here may have been registered, but the registered
+	 * callback function has not been called, so we need to check
+	 * again here.
+	 */
+	topic = oplus_mms_get_by_name(name);
+	if (topic == NULL)
+		return 0;
+	if (!topic->initialized)
+		return 0;
+	oplus_mms_call(topic);
 
 	return 0;
 }
@@ -983,8 +1000,10 @@ __oplus_mms_register(struct device *parent, const struct oplus_mms_desc *desc,
 	spin_lock_init(&mms->subscribe_lock);
 	mutex_init(&mms->msg_lock);
 	spin_lock_init(&mms->changed_lock);
-	for (i = 0; i < desc->item_num; i++)
+	for (i = 0; i < desc->item_num; i++) {
 		rwlock_init(&desc->item_table[i].lock);
+		mutex_init(&desc->item_table[i].update_lock);
+	}
 	INIT_DELAYED_WORK(&mms->update_work, oplus_mms_update_work);
 	INIT_DELAYED_WORK(&mms->msg_work, oplus_mms_msg_work);
 	INIT_LIST_HEAD(&mms->subscribe_list);

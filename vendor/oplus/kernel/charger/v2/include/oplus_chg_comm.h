@@ -19,8 +19,6 @@
 #define SOFT_REST_CHECK_DISCHG_MAX_CUR		200
 #define SOFT_REST_RETRY_MAX_CNT			2
 #define OPLUS_BMS_HEAT_THRE			200
-#define CHG_CMD_DATA_LEN			256
-#define CHG_CMD_TIME_MS				3000
 
 enum oplus_temp_region {
 	TEMP_REGION_COLD = 0,
@@ -77,6 +75,8 @@ enum comm_topic_item {
 	COMM_ITEM_SMOOTH_SOC,
 	COMM_ITEM_CHG_CYCLE_STATUS,
 	COMM_ITEM_SLOW_CHG,
+	COMM_ITEM_SHUTDOWN_SOC,
+	COMM_ITEM_VBAT_UV_THR,
 };
 
 /*
@@ -111,27 +111,6 @@ typedef enum {
 	CHG_CYCLE_VOTER__ENGINEER	= (1 << 0),
 	CHG_CYCLE_VOTER__USER		= (1 << 1),
 }OPLUS_CHG_CYCLE_VOTER;
-
-struct oplus_chg_cmd {
-	unsigned int cmd;
-	unsigned int data_size;
-	unsigned char data_buf[CHG_CMD_DATA_LEN];
-};
-
-enum oplus_chg_cmd_type {
-	CMD_WLS_THIRD_PART_AUTH,
-	CMD_UPDATE_UI_SOH,
-	CMD_INIT_UI_SOH,
-};
-
-enum oplus_chg_cmd_error {
-	CMD_ACK_OK,
-	CMD_ERROR_CHIP_NULL,
-	CMD_ERROR_DATA_NULL,
-	CMD_ERROR_DATA_INVALID,
-	CMD_ERROR_HIDL_NOT_READY,
-	CMD_ERROR_TIME_OUT,
-};
 
 int oplus_comm_get_vbatt_over_threshold(struct oplus_mms *topic);
 int oplus_comm_switch_ffc(struct oplus_mms *topic);

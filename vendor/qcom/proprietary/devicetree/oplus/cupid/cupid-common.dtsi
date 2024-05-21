@@ -649,6 +649,11 @@
 };
 
 &soc {
+	oplus_battery_log: oplus,battery_log {
+		compatible = "oplus,battery_log";
+		oplus,battery_log_support;
+	};
+
 	oplus,adsp-voocphy {
 		compatible = "oplus,adsp-voocphy";
 	};
@@ -787,6 +792,7 @@
 	qcom,vbatt_num = <2>;
 	qcom,ffc_support;
 	qcom,dual_ffc;
+	oplus,aging_ffc_version = <1>;
 	qcom,nightstandby_support;
 	recharge_after_full;
 	//qcom,wireless_support;

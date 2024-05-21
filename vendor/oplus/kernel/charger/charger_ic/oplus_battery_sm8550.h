@@ -269,6 +269,8 @@ enum usb_property_id {
 	USB_GET_BATT_CURR,
 	USB_PPS_FORCE_SVOOC,
 	USB_PLUGIN_CNT,
+	USB_GET_PRE_IS_ABNORMAL_ADAPTER,
+	USB_GET_ABNORMAL_ADAPTER_DISCONNECT_CNT,
 #endif /*OPLUS_FEATURE_CHG_BASIC*/
 	USB_PROP_MAX,
 };
@@ -599,6 +601,7 @@ struct battery_chg_dev {
 	int usb_in_status;
 	int real_chg_type;
 	int adspvoocphy_plugin_cnt;
+	int abnormal_adapter_disconnect_cnt;
 
 	char dump_info[OPLUS_CHG_TRACK_CURX_INFO_LEN];
 	char chg_power_info[OPLUS_CHG_TRACK_CURX_INFO_LEN];
@@ -623,6 +626,7 @@ struct battery_chg_dev {
 	struct delayed_work adsp_track_notify_work;
 	struct delayed_work mcu_en_init_work;
 	struct delayed_work adspvoocphy_plugin_cnt_check_work;
+	struct delayed_work check_abnormal_usbin_status;
 #endif
 #ifdef OPLUS_FEATURE_CHG_BASIC
 	struct mutex	pps_read_buffer_lock;
@@ -631,6 +635,7 @@ struct battery_chg_dev {
 #endif
 	/* To track the driver initialization status */
 	bool				initialized;
+	bool plugin_already_run;
 };
 /**********************************************************************
  **********************************************************************/

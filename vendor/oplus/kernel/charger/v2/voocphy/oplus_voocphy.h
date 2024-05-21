@@ -677,6 +677,7 @@ struct oplus_voocphy_manager {
 	int parallel_charge_project;
 
 	unsigned int plug_in_batt_temp;
+	unsigned int receive_temp_range;
 
 	unsigned char  code_id_temp_l; /* identification code temp save */
 	unsigned char  code_id_temp_h;
@@ -860,6 +861,7 @@ struct oplus_voocphy_manager {
 	int low_curr_full_t3;
 	u32 fastchg_timeout_time_init;
 	unsigned int vooc_little_cold_full_voltage;
+	unsigned int vooc_little_cool_full_voltage;
 	unsigned int vooc_cool_full_voltage;
 	unsigned int vooc_warm_full_voltage;
 	unsigned int vooc_1time_full_voltage;

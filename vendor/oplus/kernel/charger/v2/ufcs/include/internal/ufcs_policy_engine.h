@@ -8,6 +8,8 @@
 #ifndef __OPLUS_UFCS_POLICY_ENGINE_H__
 #define __OPLUS_UFCS_POLICY_ENGINE_H__
 
+#include <linux/kthread.h>
+
 enum ufcs_pe_state {
 	PE_STATE_IDEL = 0,
 	PE_STATE_SOFT_RESET,

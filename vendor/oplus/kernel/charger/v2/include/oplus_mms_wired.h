@@ -16,6 +16,7 @@ enum wired_topic_item {
 	WIRED_ITEM_USB_TEMP_VOLT_R,
 	WIRED_ITEM_USB_TEMP_L,
 	WIRED_ITEM_USB_TEMP_R,
+	WIRED_ITEM_PRE_OTG_ENABLE,
 	WIRED_ITEM_OTG_ENABLE,
 	WIRED_ITEM_CHARGER_CURR_MAX,
 	WIRED_ITEM_CHARGER_VOL_MAX,
@@ -94,4 +95,5 @@ int oplus_wired_get_otg_online_status(struct oplus_mms *topic);
 void oplus_wired_check_bcc_curr_done(struct oplus_mms *topic);
 int oplus_wired_get_bcc_curr_done_status(struct oplus_mms *topic);
 void oplus_wired_set_bcc_curr_request(struct oplus_mms *topic);
+int oplus_wired_get_byb_id_info(struct oplus_mms *topic);
 #endif /* __OPLUS_MMS_WIRED_H__ */

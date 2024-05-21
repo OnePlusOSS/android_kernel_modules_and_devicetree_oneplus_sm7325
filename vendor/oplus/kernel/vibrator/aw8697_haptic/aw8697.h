@@ -396,6 +396,7 @@ struct aw8697 {
     struct hrtimer timer;
     struct work_struct vibrator_work;
     struct work_struct rtp_work;
+	struct work_struct rtp_key_work;
     struct work_struct rtp_single_cycle_work;
     struct work_struct rtp_regroup_work;
     struct delayed_work ram_work;
@@ -420,6 +421,7 @@ struct aw8697 {
     unsigned long int microsecond;
     unsigned int sys_frequency;
     unsigned int rtp_len;
+	int oos_shortvib_flag;
 #ifdef CONFIG_OPLUS_HAPTIC_OOS
 	unsigned int sin_num;
 	size_t sin_data_lenght;
@@ -592,11 +594,15 @@ struct aw8697_que_seq {
 #define OS12_NEW_RING_END       89
 #define OPLUS_RING_START       161
 #define OPLUS_RING_END         167
+#define OS14_NEW_RING_START	371
+#define OS14_NEW_RING_END	410
 
 #define OPLUS_START_INDEX       201
 #define OPLUS_END_INDEX         326
 #define OPLUS_RING_START_INDEX  152
 #define OPLUS_RING_END_INDEX    231
+#define OS14_NEW_RING_START	371
+#define OS14_NEW_RING_END	410
 
 #define AW8697_WAVEFORM_INDEX_CS_PRESS             16
 #ifdef CONFIG_OPLUS_HAPTIC_OOS

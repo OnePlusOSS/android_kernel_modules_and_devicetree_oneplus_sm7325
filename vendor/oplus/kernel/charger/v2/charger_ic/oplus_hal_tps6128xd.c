@@ -52,9 +52,9 @@ MODULE_PARM_DESC(tps6128xd_debug_track, "debug track");
 #define DEFAULT_VOUTFLOORSET_VAL	0x03
 #define DEFAULT_ILIMSET_VAL		0x1F
 
-#define STATUS_MASK			0x13
-#define BOOST_STATUS_NORMAL		0x11
-#define BYPASS_STATUS_NORMAL		0x01
+#define STATUS_MASK			0x12
+#define BOOST_STATUS_NORMAL		0x10
+#define BYPASS_STATUS_NORMAL		0x00
 
 enum {
 	BYB_STATUS_FAULT = 0,
@@ -66,14 +66,6 @@ static const char *byb_status_name[] = {
 	[BYB_STATUS_FAULT] = "fault",
 	[BYB_STATUS_BOOST] = "boost",
 	[BYB_STATUS_BYPASS] = "bypass",
-};
-
-enum {
-	GPIO_STATUS_NC,
-	GPIO_STATUS_PD,
-	GPIO_STATUS_PU,
-	GPIO_STATUS_NOT_SUPPORT,
-	GPIO_STATUS_MAX = GPIO_STATUS_NOT_SUPPORT,
 };
 
 static const char *gpio_status_name[] = {
@@ -266,9 +258,9 @@ free_id_gpio:
 static int tps6128xd_hardware_init(struct chip_tps6128xd *chip)
 {
 	int rc = 0;
-	u8 buf[TPS6128XD_REG_CNT];
+	u8 buf[TPS6128XD_REG_CNT + 3];
 
-	rc = regmap_write(chip->regmap, VOUTFLOORSET_REG, DEFAULT_VOUTFLOORSET_VAL);
+	rc = regmap_write(chip->regmap, VOUTFLOORSET_REG, vout_mv_to_reg(chip->vout_mv));
 	if (rc < 0)
 		chg_err("write voutfloor fail, rc=%d\n", rc);
 
@@ -299,8 +291,7 @@ static int tps6128xd_hardware_init(struct chip_tps6128xd *chip)
 	if (rc < 0)
 		chg_err("read e2promctrl register fail, rc=%d", rc);
 
-
-	if (rc >= 0 && (buf[1] == DEFAULT_VOUTFLOORSET_VAL) &&
+	if (rc >= 0 && (buf[1] == vout_mv_to_reg(chip->vout_mv)) &&
 	    (buf[2] == vout_mv_to_reg(chip->vout_mv)) &&
 	    (buf[3] == DEFAULT_ILIMSET_VAL))
 		chip->i2c_success = true;
@@ -334,7 +325,7 @@ static int tps6128xd_push_err(struct oplus_chg_ic_dev *ic_dev,
 	pre_upload_time = local_clock() / TRACK_LOCAL_T_NS_TO_S_THD;
 
 	if (i2c_error)
-		oplus_chg_ic_creat_err_msg(ic_dev, OPLUS_IC_ERR_BUCK_BOOST, 0,
+		oplus_chg_ic_creat_err_msg(ic_dev, OPLUS_IC_ERR_I2C, 0,
 			"$$err_scene@@i2c_err$$err_reason@@%d", err_code);
 	else
 		oplus_chg_ic_creat_err_msg(ic_dev, OPLUS_IC_ERR_BUCK_BOOST, 0,
@@ -354,11 +345,7 @@ static int tps6128xd_init(struct oplus_chg_ic_dev *ic_dev)
 		return -ENODEV;
 	}
 	chip = oplus_chg_ic_get_drvdata(ic_dev);
-
-	if (chip->probe_gpio_status == chip->id_match_status || chip->i2c_success)
-		ic_dev->online = true;
-	else
-		ic_dev->online = false;
+	ic_dev->online = true;
 	return 0;
 }
 
@@ -375,7 +362,7 @@ static int tps6128xd_exit(struct oplus_chg_ic_dev *ic_dev)
 static int tps6128xd_reg_dump(struct oplus_chg_ic_dev *ic_dev)
 {
 	struct chip_tps6128xd *chip;
-	u8 buf[TPS6128XD_REG_CNT];
+	u8 buf[TPS6128XD_REG_CNT + 3];
 	int rc;
 	char reg_info[REG_INFO_LEN] = { 0 };
 
@@ -385,7 +372,7 @@ static int tps6128xd_reg_dump(struct oplus_chg_ic_dev *ic_dev)
 	}
 	chip = oplus_chg_ic_get_drvdata(ic_dev);
 
-	if (!ic_dev->online)
+	if (!ic_dev->online || !chip->i2c_success)
 		return 0;
 
 	if(atomic_read(&chip->suspended) == 1) {
@@ -414,10 +401,25 @@ static int tps6128xd_reg_dump(struct oplus_chg_ic_dev *ic_dev)
 
 	chg_err("%*ph\n", TPS6128XD_REG_CNT, buf);
 
-	if (rc < 0 || (buf[4] & 0x3) != 0x1 || tps6128xd_debug_track) {
+	if (rc < 0 || (buf[4] & BIT(1)) || (buf[4] & BIT(7)) || tps6128xd_debug_track) {
 		snprintf(reg_info, REG_INFO_LEN, "reg01~05,ff:[%*ph]", TPS6128XD_REG_CNT, buf);
 		tps6128xd_push_err(ic_dev, rc < 0, rc, reg_info, buf[4] & 2);
 	}
+	return 0;
+}
+
+static int oplus_get_byb_id_info(struct oplus_chg_ic_dev *ic_dev, int *count)
+{
+	struct chip_tps6128xd *chip;
+
+	if (ic_dev == NULL) {
+		chg_err("oplus_chg_ic_dev is NULL");
+		return -ENODEV;
+	}
+	chip = oplus_chg_ic_get_drvdata(ic_dev);
+
+	*count = chip->probe_gpio_status;
+
 	return 0;
 }
 
@@ -441,6 +443,9 @@ static void *oplus_chg_get_func(struct oplus_chg_ic_dev *ic_dev,
 		break;
 	case OPLUS_IC_FUNC_REG_DUMP:
 		func = OPLUS_CHG_IC_FUNC_CHECK(OPLUS_IC_FUNC_REG_DUMP, tps6128xd_reg_dump);
+		break;
+	case OPLUS_IC_FUNC_BUCK_GET_BYBID_INFO:
+		func = OPLUS_CHG_IC_FUNC_CHECK(OPLUS_IC_FUNC_BUCK_GET_BYBID_INFO, oplus_get_byb_id_info);
 		break;
 	default:
 		chg_err("this func(=%d) is not supported\n", func_id);
@@ -490,14 +495,22 @@ static ssize_t byb_status_show(struct device *dev, struct device_attribute *attr
 	int size = 0;
 	int rc = 0;
 	int status = BYB_STATUS_FAULT;
+	int gpio_status = GPIO_STATUS_NOT_SUPPORT;
 
-	if (!ic_dev->online)
+	if (chip->probe_gpio_status != chip->id_match_status && !chip->i2c_success)
 		return -ENOTSUPP;
 
 	if(atomic_read(&chip->suspended) == 1) {
 		chg_err("in suspended\n");
 		size += snprintf(buf + size, PAGE_SIZE - size, "in suspended|in suspended\n");
 		return size;
+	}
+
+	gpio_status = tps6128xd_get_id_status(chip);
+	if (gpio_status != chip->id_match_status) {
+		chg_err("id not match %d %d,", gpio_status, chip->id_match_status);
+		size += snprintf(buf + size, PAGE_SIZE - size,
+			"id not match %d %d,\n", gpio_status, chip->id_match_status);
 	}
 
 	rc = regmap_read(chip->regmap, STATUS_REG, &reg_val);

@@ -155,7 +155,7 @@
 #define WLS_VOOC_PWR_MAX_MW		15000
 
 #define WLS_MAX_STEP_CHG_ENTRIES	9
-#define WLS_FOD_PARM_LENGTH		12
+#define WLS_FOD_PARM_LEN_MAX		32
 #define BCC_MAX_STEP_ENTRIES		5
 
 #define WLS_SKIN_TEMP_MAX		500
@@ -211,6 +211,9 @@
 #define FAN_PWM_PULSE_IN_FASTCHG_MODE_V08_15		70
 
 #define FAN_PWM_PULSE_IN_SILENT_MODE_THR		(FAN_PWM_PULSE_IN_FASTCHG_MODE_V08_15 - 1)
+
+#define CHG_CMD_DATA_LEN		256
+#define CHG_CMD_TIME_MS			3000
 
 enum wls_err_scene {
 	WLS_ERR_SCENE_RX,
@@ -367,6 +370,21 @@ enum {
 	WLS_BCC_SOC_MAX,
 };
 
+enum oplus_chg_cmd_type {
+	CMD_WLS_THIRD_PART_AUTH,
+	CMD_UPDATE_UI_SOH,
+	CMD_INIT_UI_SOH,
+};
+
+enum oplus_chg_cmd_error {
+	CMD_ACK_OK,
+	CMD_ERROR_CHIP_NULL,
+	CMD_ERROR_DATA_NULL,
+	CMD_ERROR_DATA_INVALID,
+	CMD_ERROR_HIDL_NOT_READY,
+	CMD_ERROR_TIME_OUT,
+};
+
 enum wls_topic_item {
 	WLS_ITEM_PRESENT,
 	WLS_ITEM_ONLINE,
@@ -377,15 +395,21 @@ enum wls_topic_item {
 	WLS_ITEM_STATUS_KEEP,
 	WLS_ITEM_DOCK_TYPE,
 	WLS_ITEM_MAX_POWER,
+	WLS_ITEM_FASTCHG_STATUS,
+	WLS_ITEM_BCC_MAX_CURR,
+	WLS_ITEM_BCC_MIN_CURR,
+	WLS_ITEM_BCC_EXIT_CURR,
+	WLS_ITEM_BCC_TEMP_RANGE,
+	WLS_ITEM_FCC_TO_ICL,
 };
 
 #ifdef OPLUS_CHG_DEBUG
 ssize_t oplus_chg_wls_upgrade_fw_show(struct oplus_mms *mms, char *buf);
-
 ssize_t oplus_chg_wls_upgrade_fw_store(struct oplus_mms *mms, const char *buf, size_t count);
 #endif
 
 int oplus_chg_wls_set_status_keep(struct oplus_mms *mms, enum wls_status_keep_type status_keep);
 int oplus_chg_wls_get_break_sub_crux_info(struct oplus_mms *mms, char *crux_info);
-
+ssize_t oplus_chg_wls_send_mutual_cmd(struct oplus_mms *mms, char *buf);
+void oplus_chg_wls_response_mutual_cmd(struct oplus_mms *mms, const char *buf, size_t count);
 #endif /* __OPLUS_CHG_WLS_H__ */

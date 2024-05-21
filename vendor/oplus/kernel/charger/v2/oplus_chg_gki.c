@@ -5,6 +5,7 @@
 #include <linux/slab.h>
 #include <linux/of_platform.h>
 #include <linux/power_supply.h>
+#include <linux/sched/clock.h>
 #ifndef CONFIG_DISABLE_OPLUS_FUNCTION
 #include <soc/oplus/system/oplus_project.h>
 #endif
@@ -45,6 +46,7 @@ struct oplus_gki_device {
 	struct votable *fv_votable;
 	struct votable *vooc_curr_votable;
 	struct votable *ufcs_curr_votable;
+	struct votable *pps_curr_votable;
 
 	struct delayed_work status_keep_clean_work;
 	struct delayed_work status_keep_delay_unlock_work;
@@ -122,6 +124,14 @@ is_ufcs_curr_votable_available(struct oplus_gki_device *chip)
 	if (!chip->ufcs_curr_votable)
 		chip->ufcs_curr_votable = find_votable("UFCS_CURR");
 	return !!chip->ufcs_curr_votable;
+}
+
+__maybe_unused static bool
+is_pps_curr_votable_available(struct oplus_gki_device *chip)
+{
+	if (!chip->pps_curr_votable)
+		chip->pps_curr_votable = find_votable("PPS_CURR");
+	return !!chip->pps_curr_votable;
 }
 
 static bool is_main_gauge_topic_available(struct oplus_gki_device *chip)
@@ -442,15 +452,31 @@ static int oplus_gki_get_ui_soc(struct oplus_gki_device *chip)
 	return ui_soc;
 }
 
+#define OPLUS_NS_TO_MS (1000 * 1000)
+int oplus_chg_get_curr_time_ms(unsigned long *time_ms)
+{
+	u64 ts_nsec;
+
+	ts_nsec = local_clock();
+	*time_ms = ts_nsec / OPLUS_NS_TO_MS;
+
+	return *time_ms;
+}
+
+#define KPOC_FORCE_VBUS_MV 5000
+#define FORCE_VBUS_5V_TIME 10000
 static int battery_psy_get_prop(struct power_supply *psy,
 		enum power_supply_property prop,
 		union power_supply_propval *pval)
 {
 	struct oplus_gki_device *chip = power_supply_get_drvdata(psy);
 	union mms_msg_data data = { 0 };
+	struct power_supply *wlspsy = NULL;
+	union power_supply_propval wlsval = { 0 };
 	int rc = 0;
 	int bms_temp_compensation;
-	static int pre_batt_status;
+	static int pre_batt_status = 0;
+	unsigned long cur_chg_time = 0;
 
 	if (chip->gauge_topic == NULL)
 		return -ENODEV;
@@ -463,8 +489,17 @@ static int battery_psy_get_prop(struct power_supply *psy,
 			pval->intval = pre_batt_status;
 		} else {
 			pval->intval = chip->batt_status;
-			if  (chip->wls_online)
+			if  (chip->wls_online) {
 				pre_batt_status = pval->intval;
+			} else if (pre_batt_status) {
+				wlspsy = power_supply_get_by_name("wireless");
+				if (wlspsy)
+					power_supply_get_property(wlspsy, POWER_SUPPLY_PROP_ONLINE, &wlsval);
+				if (wlsval.intval)
+					pval->intval = pre_batt_status;
+				else
+					pre_batt_status = 0;
+			}
 		}
 		break;
 	case POWER_SUPPLY_PROP_HEALTH:
@@ -580,6 +615,9 @@ static int battery_psy_get_prop(struct power_supply *psy,
 			pval->intval = 0; /* TODO */
 		else
 			pval->intval = oplus_wired_get_vbus();
+		if (oplus_is_power_off_charging() &&
+		    oplus_chg_get_curr_time_ms(&cur_chg_time) < FORCE_VBUS_5V_TIME)
+			pval->intval = KPOC_FORCE_VBUS_MV;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MIN:
 		rc = oplus_mms_get_item_data(chip->gauge_topic,
@@ -637,12 +675,16 @@ static int battery_psy_set_prop(struct power_supply *psy,
 					vote(chip->vooc_curr_votable, HIDL_VOTER, false, 0, false);
 				if (is_ufcs_curr_votable_available(chip))
 					vote(chip->ufcs_curr_votable, HIDL_VOTER, false, 0, false);
+				if (is_pps_curr_votable_available(chip))
+					vote(chip->pps_curr_votable, HIDL_VOTER, false, 0, false);
 			} else {
 				vote(chip->wired_icl_votable, HIDL_VOTER, (val == 0) ? false : true, val, true);
 				if (is_vooc_curr_votable_available(chip))
 					vote(chip->vooc_curr_votable, HIDL_VOTER, (val == 0) ? false : true, val, false);
 				if (is_ufcs_curr_votable_available(chip))
 					vote(chip->ufcs_curr_votable, HIDL_VOTER, (val == 0) ? false : true, val, false);
+				if (is_pps_curr_votable_available(chip))
+					vote(chip->pps_curr_votable, HIDL_VOTER, (val == 0) ? false : true, val, false);
 			}
 		} else {
 			rc = -ENOTSUPP;
@@ -720,6 +762,8 @@ static const struct power_supply_desc batt_psy_desc = {
 };
 
 #define FORCE_UPDATE_TIME	60
+#define HIGH_TEMP_UPDATE_THD	500
+#define HIGH_TEMP_UPDATE_TIME	10
 static void oplus_gki_gauge_update_work(struct work_struct *work)
 {
 	struct oplus_gki_device *chip =
@@ -762,10 +806,13 @@ static void oplus_gki_gauge_update_work(struct work_struct *work)
 		if (!IS_ERR_OR_NULL(chip->batt_psy))
 			power_supply_changed(chip->batt_psy);
 	} else {
-		if (time_is_before_jiffies(update_time)) {
+		if ((chip->temperature >= HIGH_TEMP_UPDATE_THD
+		    && time_is_before_eq_jiffies(update_time + (unsigned long)(HIGH_TEMP_UPDATE_TIME * HZ))) ||
+		    (chip->temperature < HIGH_TEMP_UPDATE_THD
+		    && time_is_before_eq_jiffies(update_time + (unsigned long)(FORCE_UPDATE_TIME * HZ)))) {
 			if (!IS_ERR_OR_NULL(chip->batt_psy))
 				power_supply_changed(chip->batt_psy);
-			update_time = jiffies + FORCE_UPDATE_TIME * HZ;
+			update_time = jiffies;
 		}
 	}
 }
@@ -1173,13 +1220,16 @@ static void oplus_gki_comm_subs_callback(struct mms_subscribe *subs,
 			oplus_mms_get_item_data(chip->comm_topic, id, &data,
 						false);
 			chip->led_on = data.intval;
-			if (chip->led_on &&
-			    is_vooc_curr_votable_available(chip))
-				vote(chip->vooc_curr_votable, HIDL_VOTER, false, 0, false);
+			if (chip->led_on) {
+				if (is_vooc_curr_votable_available(chip))
+					vote(chip->vooc_curr_votable, HIDL_VOTER, false, 0, false);
 
-			if (chip->led_on &&
-			    is_ufcs_curr_votable_available(chip))
-				vote(chip->ufcs_curr_votable, HIDL_VOTER, false, 0, false);
+				if (is_ufcs_curr_votable_available(chip))
+					vote(chip->ufcs_curr_votable, HIDL_VOTER, false, 0, false);
+
+				if (is_pps_curr_votable_available(chip))
+					vote(chip->pps_curr_votable, HIDL_VOTER, false, 0, false);
+			}
 			break;
 		case COMM_ITEM_CHARGING_DISABLE:
 		case COMM_ITEM_CHARGE_SUSPEND:

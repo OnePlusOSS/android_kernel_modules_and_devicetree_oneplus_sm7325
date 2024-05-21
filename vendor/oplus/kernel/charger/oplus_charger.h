@@ -145,7 +145,11 @@
 #define PLATFORM_SUPPORT_TIMESPEC 1
 #elif defined CONFIG_OPLUS_SM8550_CHARGER
 #include "charger_ic/oplus_battery_sm8550.h"
+#elif defined OPLUS_CHG_SEPARATE_MUSE
+#include "charger_ic/oplus_battery_sm6115R.h"
 #elif defined CONFIG_OPLUS_SM6375R_CHARGER
+#include "charger_ic/oplus_battery_sm6375.h"
+#elif defined CONFIG_OPLUS_SM6115R_CHARGER
 #include "charger_ic/oplus_battery_sm6375.h"
 #else /* CONFIG_OPLUS_MSM8953_CHARGER */
 #include "charger_ic/oplus_battery_msm8976.h"
@@ -1642,6 +1646,7 @@ struct oplus_chg_operations {
 	int (*check_chg_plugin)(void);
 	int (*get_cp_tsbus)(void);
 	int (*get_cp_tsbat)(void);
+	int (*get_abnormal_adapter_disconnect_cnt)(void);
 };
 
 int __attribute__((weak))
@@ -1897,6 +1902,7 @@ void oplus_chg_get_aging_ffc_offset(struct oplus_chg_chip *chip,
 	int *ffc1_offset, int *ffc2_offset);
 int oplus_get_ccdetect_online(void);
 bool oplus_chg_get_led_status(void);
+int oplus_chg_adspvoocphy_get_abnormal_adapter_disconnect_cnt(void);
 #if IS_ENABLED(CONFIG_OPLUS_CHG_TEST_KIT)
 void oplus_test_kit_unregister(void);
 #endif

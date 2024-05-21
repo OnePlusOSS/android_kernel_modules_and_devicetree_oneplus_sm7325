@@ -78,14 +78,16 @@ struct ufcs_verify_info {
 
 struct ufcs_class {
 	struct ufcs_dev *ufcs;
-	struct workqueue_struct *wq;
-	struct work_struct event_work;
-	struct work_struct msg_send_work;
-	struct work_struct recv_work;
-	struct work_struct ack_nck_work;
+	struct kthread_worker *worker;
+	struct kthread_work event_work;
+	struct kthread_work msg_send_work;
+	struct kthread_work recv_work;
 	struct work_struct test_handle_work;
+	struct work_struct ack_nck_work;
+	struct work_struct fifo_overflow_work;
 	struct task_struct *sm_task;
 	wait_queue_head_t sm_wq;
+	spinlock_t err_flag_lock;
 
 	struct hrtimer timer[TIMER_MAX];
 	struct ufcs_event *timeout_event[TIMER_MAX];

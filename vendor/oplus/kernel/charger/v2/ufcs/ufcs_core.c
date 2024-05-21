@@ -15,6 +15,7 @@
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/kthread.h>
+#include <linux/version.h>
 
 #include "ufcs_core.h"
 #include "ufcs_timer.h"
@@ -61,8 +62,27 @@ static ssize_t pdo_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(pdo);
 
+static ssize_t err_flag_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct ufcs_dev *ufcs = dev_get_drvdata(dev);
+	int rc;
+	unsigned int err_flag;
+
+	if (ufcs == NULL)
+		return -ENODEV;
+
+	rc = ufcs_check_error_flag_all(ufcs, &err_flag);
+	if (rc < 0)
+		return rc;
+
+	return snprintf(buf, PAGE_SIZE, "0x%x\n", err_flag);
+}
+static DEVICE_ATTR_RO(err_flag);
+
 static struct device_attribute *ufcs_ic_attributes[] = {
 	&dev_attr_pdo,
+	&dev_attr_err_flag,
 	NULL
 };
 
@@ -124,6 +144,9 @@ ufcs_device_register(struct device *parent, struct ufcs_dev_ops *ops,
 	struct device_attribute **attrs;
 	struct device_attribute *attr;
 	int rc;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
+	struct sched_param sp = {.sched_priority = MAX_RT_PRIO / 2 };
+#endif
 
 	if (parent == NULL) {
 		ufcs_err("parent is NULL\n");
@@ -166,6 +189,12 @@ ufcs_device_register(struct device *parent, struct ufcs_dev_ops *ops,
 	ufcs->dev.release = ufcs_release;
 	dev_set_drvdata(&ufcs->dev, ufcs);
 
+	rc = kfifo_alloc(&ufcs->err_flag_fifo, UFCS_ERR_FLAG_BUF_SIZE, GFP_KERNEL);
+	if (rc < 0) {
+		ufcs_err("alloc err_flag_fifo error\n");
+		goto free_ufcs_mem;
+	}
+
 	rc = dev_set_name(&ufcs->dev, "ufcs");
 	if (rc)
 		goto free_ufcs;
@@ -187,16 +216,22 @@ ufcs_device_register(struct device *parent, struct ufcs_dev_ops *ops,
 		}
 	}
 
-	class->wq = alloc_workqueue("ufcs_wq", WQ_FREEZABLE | WQ_HIGHPRI, 0);
-	if (!class->wq) {
+	class->worker = kthread_create_worker(0, "ufcs");
+	if (IS_ERR(class->worker)) {
 		rc = -ENOMEM;
 		goto del_device;
 	}
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
+	sched_setscheduler(class->worker->task, SCHED_FIFO, &sp);
+#else
+	sched_set_fifo(class->worker->task);
+#endif
 	init_completion(&class->request_ack);
 	mutex_init(&class->pe_lock);
 	mutex_init(&class->handshake_lock);
 	mutex_init(&class->ext_req_lock);
+	spin_lock_init(&class->err_flag_lock);
 
 	rc = ufcs_timer_init(class);
 	if (rc)
@@ -223,12 +258,14 @@ event_init_err:
 	kthread_stop(class->sm_task);
 policy_engine_init_err:
 timer_init_err:
-	destroy_workqueue(class->wq);
+	kthread_destroy_worker(class->worker);
 del_device:
 device_create_file_err:
 	device_del(&ufcs->dev);
 free_ufcs:
 	put_device(&ufcs->dev);
+free_ufcs_mem:
+	kfifo_free(&ufcs->err_flag_fifo);
 	kfree(ufcs);
 	kfree(class);
 	return ERR_PTR(rc);
@@ -246,9 +283,10 @@ void ufcs_device_unregister(struct ufcs_dev *ufcs)
 	class = ufcs->class;
 	complete_all(&class->event.ack);
 	kthread_stop(class->sm_task);
-	destroy_workqueue(class->wq);
+	kthread_destroy_worker(class->worker);
 	device_del(&ufcs->dev);
 	put_device(&ufcs->dev);
+	kfifo_free(&ufcs->err_flag_fifo);
 	kfree(ufcs);
 	kfree(class);
 }
